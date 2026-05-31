@@ -10,7 +10,10 @@ What it does
 ------------
 - Auto-detects the highest puzzle id (newest puzzle) from sbsolver's archive page.
 - Walks back to puzzle id 1 (or `--start-id N`).
-- Resumes from an existing CSV: any date already in the file is skipped.
+- Resumes from an existing CSV: any date already in the file is skipped *without*
+  re-fetching it. sbsolver numbers puzzles sequentially (one per day), so one known
+  (id, date) pair predicts every other id's date — already-present puzzles never hit
+  the network, so there's no request and no throttle delay for them.
 - Computes the rank thresholds (0 / 2 / 5 / 8 / 15 / 25 / 40 / 50 / 70 / 100 % of
   Queen Bee, rounded half-up) — the formula was verified against six real NYT tables.
 - Throttles requests (default 1.5 s pause), retries on transient errors, checkpoints
@@ -210,8 +213,26 @@ def main():
     have_dates = {r["date"] for r in rows}
     new_count, failed = 0, []
 
+    # Anchor mapping a puzzle id to its sbsolver date. sbsolver numbers puzzles
+    # sequentially, one per calendar day, so a single known (id, date) pair fixes
+    # every other id's date. We use it to skip puzzles already in the CSV WITHOUT
+    # fetching them — no request and no throttle delay for rows we already hold.
+    # The anchor is refreshed on every real fetch, so any drift self-corrects on
+    # the next puzzle we actually download.
+    anchor_id = None
+    anchor_date = None
+
+    def predict_date(pid):
+        if anchor_id is None:
+            return None
+        return anchor_date + dt.timedelta(days=pid - anchor_id)
+
     try:
         for pid in range(end_id, args.start_id - 1, -1):     # newest -> oldest
+            pred = predict_date(pid)
+            if pred is not None and pred.isoformat() in have_dates:
+                # Already scraped: skip without contacting sbsolver at all.
+                continue
             try:
                 html = fetch(PUZZLE_URL.format(id=pid))
                 if html is None:
@@ -219,6 +240,7 @@ def main():
                 p = parse_puzzle(html, pid)
                 if p is None:
                     failed.append(pid); continue
+                anchor_id, anchor_date = pid, p["date"]   # re-anchor on every real fetch
                 if p["date"].isoformat() in have_dates:
                     print(f"  s/{pid}  {p['date']}  (already in CSV, skipped)", file=sys.stderr)
                     continue
