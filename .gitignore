@@ -217,6 +217,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+.DS_STORE
 *.csv
 *.png
 blogstyle.py
